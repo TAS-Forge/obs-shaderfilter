@@ -19,8 +19,10 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$Program failed ($LASTEXITCODE)" }
 }
 
-$cmakeVersion = (& cmake --version | Select-Object -First 1)
-if ($LASTEXITCODE -ne 0 -or $cmakeVersion -ne 'cmake version 4.3.1') {
+$cmakeOutput = & cmake --version
+$cmakeExitCode = $LASTEXITCODE
+$cmakeVersion = $cmakeOutput | Select-Object -First 1
+if ($cmakeExitCode -ne 0 -or $cmakeVersion -ne 'cmake version 4.3.1') {
     throw "Expected CMake 4.3.1; found: $cmakeVersion"
 }
 if (-not (Test-Path -LiteralPath $obsSource)) {

@@ -5,6 +5,7 @@ $testRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../work/build-scrip
 New-Item -ItemType Directory -Path (Join-Path $testRoot 'obs-studio') -Force | Out-Null
 $global:shaderfilterSmokeConfigureSeen = $false
 $global:shaderfilterSmokeBuildSeen = $false
+Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
 function git {
     $global:LASTEXITCODE = 0
     if ($args -contains 'rev-parse') { return 'ba2f32bdf791005443988a4955e963663e16b1ed' }
@@ -18,8 +19,14 @@ function git {
     throw "Unexpected git arguments: $args"
 }
 function cmake {
+    if ($args.Count -eq 1 -and $args[0] -eq '--version') {
+        Write-Output 'cmake version 4.3.1'
+        Write-Output ''
+        Write-Output 'CMake suite maintained and supported by Kitware.'
+        $global:LASTEXITCODE = 0
+        return
+    }
     $global:LASTEXITCODE = 0
-    if ($args.Count -eq 1 -and $args[0] -eq '--version') { return 'cmake version 4.3.1' }
     if ($args[0] -eq '-S') {
         foreach ($expected in @('-B','-G','Visual Studio 18 2026','-A','x64','-T','version=14.51,host=x64',
                                 '-DENABLE_FRONTEND=OFF','-DENABLE_PLUGINS=OFF','-DENABLE_BROWSER=OFF')) {
