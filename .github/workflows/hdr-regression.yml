@@ -1,5 +1,7 @@
 name: HDR contracts and OBS 32.2.2 Windows build
 on:
+  push:
+    branches: [hdr-obs-32.2.2-ci]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -37,3 +39,4 @@ jobs:
           name: obs-shaderfilter-hdr-windows-x64-unsigned
           path: ${{ runner.temp }}/shaderfilter-hdr/package
           if-no-files-found: error
+
