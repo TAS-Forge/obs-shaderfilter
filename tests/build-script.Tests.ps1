@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $testRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../work/build-script-test-$([guid]::NewGuid())"))
 New-Item -ItemType Directory -Path (Join-Path $testRoot 'obs-studio') -Force | Out-Null
+'# OBS CMake fixture' | Set-Content -LiteralPath (Join-Path $testRoot 'obs-studio/CMakeLists.txt')
 $global:shaderfilterSmokeConfigureSeen = $false
 $global:shaderfilterSmokeBuildSeen = $false
 Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
@@ -28,6 +29,10 @@ function cmake {
     }
     $global:LASTEXITCODE = 0
     if ($args[0] -eq '-S') {
+        $topLevel = Get-Content -Raw -LiteralPath (Join-Path $args[1] 'CMakeLists.txt')
+        if ($topLevel -notmatch 'include\(".+add-shaderfilter.cmake"\)') { throw 'Missing direct build integration' }
+        $integration = Get-Content -Raw -LiteralPath (Join-Path $testRoot 'add-shaderfilter.cmake')
+        if ($integration -notmatch '^add_subdirectory\(' -or $integration -match 'DEFER') { throw 'Unsupported subdirectory integration' }
         foreach ($expected in @('-B','-G','Visual Studio 18 2026','-A','x64','-T','version=14.51,host=x64',
                                 '-DENABLE_FRONTEND=OFF','-DENABLE_PLUGINS=OFF','-DENABLE_BROWSER=OFF')) {
             if ($args -notcontains $expected) { throw "Lost configure argument: $expected" }

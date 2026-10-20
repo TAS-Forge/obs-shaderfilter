@@ -35,15 +35,19 @@ $obsStatus = & git -C $obsSource status --porcelain --untracked-files=no
 if ($LASTEXITCODE -ne 0 -or $obsStatus) { throw 'OBS source must have no tracked modifications' }
 
 # Use OBS's own build system and hash-checked 32.2.2 dependency manifest.
-# DEFER adds only this plugin after OBS defines its targets and helper functions.
+# Add this plugin after OBS defines its targets and helper functions. CMake does
+# not permit add_subdirectory during deferred execution. Only this disposable
+# BuildRoot checkout's top-level build file is changed, after revision checks.
 $pluginCmakePath = $pluginRoot.Replace('\','/')
 $binaryCmakePath = (Join-Path $obsBuild 'plugins/obs-shaderfilter').Replace('\','/')
 $inject = Join-Path $BuildRoot 'add-shaderfilter.cmake'
 @"
-cmake_language(DEFER CALL add_subdirectory "$pluginCmakePath" "$binaryCmakePath")
+add_subdirectory("$pluginCmakePath" "$binaryCmakePath")
 "@ | Set-Content -LiteralPath $inject -Encoding utf8
+$injectCmakePath = $inject.Replace('\','/')
+Add-Content -LiteralPath (Join-Path $obsSource 'CMakeLists.txt') -Encoding utf8 -Value "`n# Shaderfilter HDR build integration`ninclude(`"$injectCmakePath`")"
 Invoke-Checked -Program cmake -Arguments @('-S', $obsSource, '-B', $obsBuild, '-G', $Generator, '-A', 'x64', '-T', $Toolset,
-    "-DCMAKE_PROJECT_obs-studio_INCLUDE=$inject", '-DENABLE_FRONTEND=OFF', '-DENABLE_PLUGINS=OFF',
+    '-DENABLE_FRONTEND=OFF', '-DENABLE_PLUGINS=OFF',
     '-DENABLE_SCRIPTING=OFF', '-DENABLE_BROWSER=OFF', '-DENABLE_CCACHE=OFF')
 Invoke-Checked -Program cmake -Arguments @('--build', $obsBuild, '--config', 'RelWithDebInfo', '--target', 'obs-shaderfilter', '--parallel')
 
@@ -57,6 +61,7 @@ Copy-Item -LiteralPath $dlls[0].FullName -Destination (Join-Path $package 'obs-p
 Copy-Item -LiteralPath (Join-Path $pluginRoot 'data') -Destination (Join-Path $package 'data/obs-plugins/obs-shaderfilter') -Recurse
 $manifest = [ordered]@{
     obs_revision = $head
+    obs_build_integration_sha256 = (Get-FileHash -LiteralPath $inject -Algorithm SHA256).Hash
     shaderfilter_base = '4b48d4f7c41d991903061c30e119e020cfe02de4'
     plugin_head = (& git -C $pluginRoot rev-parse HEAD)
     plugin_diff_sha256 = $null
@@ -74,6 +79,7 @@ Invoke-Checked -Program git -Arguments @('-C', $pluginRoot, 'diff', '--binary', 
 $manifest.plugin_diff_sha256 = (Get-FileHash -LiteralPath (Join-Path $BuildRoot 'build-source.diff') -Algorithm SHA256).Hash
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $package 'build-manifest.json') -Encoding utf8
 Copy-Item -LiteralPath (Join-Path $obsBuild 'CMakeCache.txt') -Destination $package
+Copy-Item -LiteralPath $inject -Destination $package
 Get-ChildItem -LiteralPath (Join-Path $obsBuild 'CMakeFiles') -Recurse -File -Filter 'CMakeCCompiler.cmake' |
     Copy-Item -Destination $package
 Write-Output "Unsigned test package: $package"
