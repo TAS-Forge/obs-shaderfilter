@@ -203,6 +203,8 @@ struct shader_filter_data {
 	gs_texrender_t *output_texrender;
 	gs_texrender_t *previous_output_texrender;
 	gs_eparam_t *param_output_image;
+	enum gs_color_space render_space;
+	bool render_space_valid;
 
 	bool reload_effect;
 	struct dstr last_path;
@@ -2921,6 +2923,10 @@ static void shader_filter_tick(void *data, float seconds)
 
 gs_texrender_t *create_or_reset_texrender(gs_texrender_t *render, const enum gs_color_format format)
 {
+	if (render && gs_texrender_get_format(render) != format) {
+		gs_texrender_destroy(render);
+		render = NULL;
+	}
 	if (!render) {
 		render = gs_texrender_create(format, GS_ZS_NONE);
 	} else {
@@ -2929,23 +2935,35 @@ gs_texrender_t *create_or_reset_texrender(gs_texrender_t *render, const enum gs_
 	return render;
 }
 
-static void get_input_source(struct shader_filter_data *filter)
+static void reset_render_color_space(struct shader_filter_data *filter, enum gs_color_space space)
+{
+	if (filter->render_space_valid && filter->render_space == space)
+		return;
+
+	/* History in a different representation must never be sampled as this frame. */
+	gs_texrender_destroy(filter->input_texrender);
+	gs_texrender_destroy(filter->previous_input_texrender);
+	gs_texrender_destroy(filter->output_texrender);
+	gs_texrender_destroy(filter->previous_output_texrender);
+	filter->input_texrender = NULL;
+	filter->previous_input_texrender = NULL;
+	filter->output_texrender = NULL;
+	filter->previous_output_texrender = NULL;
+	filter->input_rendered = false;
+	filter->output_rendered = false;
+	filter->render_space = space;
+	filter->render_space_valid = true;
+}
+
+static bool get_input_source(struct shader_filter_data *filter)
 {
 	if (filter->input_rendered)
-		return;
+		return true;
 
 	// Use the OBS default effect file as our effect.
 	gs_effect_t *pass_through = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 
-	// Set up our color space info.
-	const enum gs_color_space preferred_spaces[] = {
-		GS_CS_SRGB,
-		GS_CS_SRGB_16F,
-		GS_CS_709_EXTENDED,
-	};
-
-	const enum gs_color_space source_space =
-		obs_source_get_color_space(obs_filter_get_target(filter->context), OBS_COUNTOF(preferred_spaces), preferred_spaces);
+	const enum gs_color_space source_space = filter->render_space;
 
 	const enum gs_color_format format = gs_get_format_from_space(source_space);
 
@@ -2962,9 +2980,10 @@ static void get_input_source(struct shader_filter_data *filter)
 	// And set up your texrender to recieve the created texture.
 	if (!filter->transition &&
 	    !obs_source_process_filter_begin_with_color_space(filter->context, format, source_space, OBS_NO_DIRECT_RENDERING))
-		return;
+		return false;
 
-	if (gs_texrender_begin(filter->input_texrender, filter->total_width, filter->total_height)) {
+	if (gs_texrender_begin_with_color_space(filter->input_texrender, filter->total_width, filter->total_height,
+					     source_space)) {
 
 		gs_blend_state_push();
 		gs_reset_blend_state();
@@ -2985,18 +3004,12 @@ static void get_input_source(struct shader_filter_data *filter)
 		gs_blend_state_pop();
 		filter->input_rendered = true;
 	}
+	return filter->input_rendered;
 }
 
 static void draw_output(struct shader_filter_data *filter)
 {
-	const enum gs_color_space preferred_spaces[] = {
-		GS_CS_SRGB,
-		GS_CS_SRGB_16F,
-		GS_CS_709_EXTENDED,
-	};
-
-	const enum gs_color_space source_space =
-		obs_source_get_color_space(obs_filter_get_target(filter->context), OBS_COUNTOF(preferred_spaces), preferred_spaces);
+	const enum gs_color_space source_space = filter->render_space;
 
 	const enum gs_color_format format = gs_get_format_from_space(source_space);
 
@@ -3005,6 +3018,8 @@ static void draw_output(struct shader_filter_data *filter)
 	}
 
 	gs_texture_t *texture = gs_texrender_get_texture(filter->output_texrender);
+	if (!texture)
+		return;
 	gs_effect_t *pass_through = filter->output_effect;
 	if (!pass_through)
 		pass_through = obs_get_base_effect(OBS_EFFECT_DEFAULT);
@@ -3012,8 +3027,17 @@ static void draw_output(struct shader_filter_data *filter)
 	if (filter->param_output_image) {
 		gs_effect_set_texture(filter->param_output_image, texture);
 	}
+	if (filter->output_effect) {
+		/* Only the 8-bit SDR buffer contains nonlinear sRGB shader output.
+		 * All float buffers, including high-precision SDR, contain linear RGB. */
+		gs_effect_set_bool(gs_effect_get_param_by_name(pass_through, "convert_linear"), source_space == GS_CS_SRGB);
+	}
 
+	gs_blend_state_push();
+	gs_blend_function_separate(filter->use_pm_alpha ? GS_BLEND_ONE : GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA,
+				   GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	obs_source_process_filter_end(filter->context, pass_through, filter->total_width, filter->total_height);
+	gs_blend_state_pop();
 }
 
 void shader_filter_set_effect_params(struct shader_filter_data *filter)
@@ -3223,11 +3247,11 @@ static enum gs_color_space shader_filter_get_color_space(void *data, size_t coun
 	return obs_source_get_color_space(target, OBS_COUNTOF(potential_spaces), potential_spaces);
 }
 
-static void render_shader(struct shader_filter_data *filter, float f, obs_source_t *filter_to)
+static bool render_shader(struct shader_filter_data *filter, float f, obs_source_t *filter_to)
 {
 	gs_texture_t *texture = gs_texrender_get_texture(filter->input_texrender);
 	if (!texture) {
-		return;
+		return false;
 	}
 
 	if (filter->param_previous_output) {
@@ -3236,7 +3260,7 @@ static void render_shader(struct shader_filter_data *filter, float f, obs_source
 		filter->previous_output_texrender = temp;
 	}
 
-	enum gs_color_space space = shader_filter_get_color_space(filter, 0, NULL);
+	enum gs_color_space space = filter->render_space;
 	enum gs_color_format format = gs_get_format_from_space(space);
 	filter->output_texrender = create_or_reset_texrender(filter->output_texrender, format);
 
@@ -3354,7 +3378,15 @@ static void render_shader(struct shader_filter_data *filter, float f, obs_source
 	gs_enable_blending(false);
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 
-	if (gs_texrender_begin(filter->output_texrender, filter->total_width, filter->total_height)) {
+	/* User shaders sample/store raw values: nonlinear for GS_RGBA SDR, linear
+	 * for GS_RGBA16F. Never inherit an sRGB framebuffer write from the caller. */
+	const bool previous_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(false);
+	bool rendered = false;
+	if (gs_texrender_begin_with_color_space(filter->output_texrender, filter->total_width, filter->total_height, space)) {
+		struct vec4 clear_color;
+		vec4_zero(&clear_color);
+		gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
 		gs_ortho(0.0f, (float)filter->total_width, 0.0f, (float)filter->total_height, -100.0f, 100.0f);
 		while (gs_effect_loop(filter->effect, "Draw")) {
 			if (filter->use_template) {
@@ -3372,9 +3404,12 @@ static void render_shader(struct shader_filter_data *filter, float f, obs_source
 			}
 		}
 		gs_texrender_end(filter->output_texrender);
+		rendered = true;
 	}
+	gs_enable_framebuffer_srgb(previous_srgb);
 
 	gs_blend_state_pop();
+	return rendered;
 }
 
 static void shader_filter_render(void *data, gs_effect_t *effect)
@@ -3388,6 +3423,8 @@ static void shader_filter_render(void *data, gs_effect_t *effect)
 	if (move_get_transition_filter)
 		f = move_get_transition_filter(filter->context, &filter_to);
 
+	reset_render_color_space(filter, shader_filter_get_color_space(filter, 0, NULL));
+
 	if (f == 0.0f && filter->output_rendered) {
 		draw_output(filter);
 		return;
@@ -3398,12 +3435,18 @@ static void shader_filter_render(void *data, gs_effect_t *effect)
 		return;
 	}
 
-	get_input_source(filter);
+	if (!get_input_source(filter)) {
+		obs_source_skip_video_filter(filter->context);
+		return;
+	}
 
 	filter->rendering = true;
-	render_shader(filter, f, filter_to);
-	draw_output(filter);
-	if (f == 0.0f)
+	const bool rendered = render_shader(filter, f, filter_to);
+	if (rendered)
+		draw_output(filter);
+	else
+		obs_source_skip_video_filter(filter->context);
+	if (f == 0.0f && rendered)
 		filter->output_rendered = true;
 	filter->rendering = false;
 }

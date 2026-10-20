@@ -3,6 +3,8 @@
 /build/
 /build_*/
 /release/
+/work/
+__pycache__/
 /installer/Output/
 
 .vscode

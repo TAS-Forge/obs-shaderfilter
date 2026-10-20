@@ -1,3 +1,6 @@
+// Keep bilinear border samples premultiplied to avoid dark transparent fringes.
+#define USE_PM_ALPHA 1
+
 uniform float center_x_percent<
     string label = "Center x percent";
     string widget_type = "slider";
@@ -31,6 +34,9 @@ float4 mainImage(VertData v_in) : TARGET
 {
     float2 center_pos = float2(center_x_percent * .01, center_y_percent * .01);
     float2 uv = v_in.uv;
+    // normalize(0) is undefined; the optical center maps to itself.
+    if (distance(center_pos, v_in.uv) == 0.0)
+        return image.Sample(textureSampler, uv);
     if (power_x >= 0.0001){
         float b = sqrt(dot(center_pos, center_pos));
         uv.x = (center_pos  + normalize(v_in.uv - center_pos) * tan(distance(center_pos, v_in.uv) * power_x) * b / tan( b * power_x)).x;

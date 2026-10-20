@@ -1,6 +1,7 @@
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform texture2d output_image;
+uniform bool convert_linear = true;
 
 sampler_state textureSampler{
     Filter = Linear;
@@ -35,7 +36,8 @@ float3 srgb_nonlinear_to_linear(float3 v)
 float4 mainImage(VertData v_in) : TARGET
 {
 	float4 px = output_image.Sample(textureSampler, v_in.uv);
-	px.xyz = srgb_nonlinear_to_linear(px.xyz);
+	if (convert_linear)
+		px.xyz = srgb_nonlinear_to_linear(px.xyz);
 	return px;
 }
 
